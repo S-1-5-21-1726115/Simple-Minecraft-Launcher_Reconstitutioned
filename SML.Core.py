@@ -6,6 +6,7 @@
 Microsoft 帐户登录服务器检测到身份验证重复尝试次数过多。请稍等片刻，然后重试。\r\n
 \r\n
 我在调试代码时就被微软紫菜过()\r\n
+另外,通常资源文件是一定要重试的,因为太频繁的请求会让服务器宕机\r\n
 """
 """
 完全重写
@@ -17,7 +18,7 @@ import platform,requests,json
 import subprocess,sys,webbrowser
 import random,re,io
 import hashlib,datetime,os
-import concurrent.futures,math,shutil
+import concurrent.futures,shutil
 """
 从此处开始改为from xx import xx的形式
 """
@@ -26,7 +27,7 @@ from os.path import exists,isfile,isdir,getsize
 from hashlib import sha1
 #------网络相关,包括异常处理------
 from requests.exceptions import *
-from requests import get,post
+from requests import get,post,head
 #------子进程------
 from subprocess import Popen,PIPE,STDOUT
 #------平台获取------
@@ -48,18 +49,20 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 #------创建/删除目录和删除文件------
 from os import makedirs,remove,rmdir
-#------绝对值------
-from math import fabs
 #------复制文件------
 from shutil import copyfile
 
 #------常量区------
 strptime=datetime.strptime
 strftime=datetime.strftime
-AssetsDownloadLink="https://resources.download.minecraft.net/{}/{}"
-AssetsIndexSavePath="{}\\assets\\indexes\\{}.json"
-AssetsSavePath="{}\\assets\\objects\\{}\\{}"
-LegacySavePath="{}\\assets\\virtual\\legacy\\{}"
+AssetsDownloadLink="https://resources.download.minecraft.net/{0}/{1}"
+AssetsIndexSavePath="{0}\\assets\\indexes\\{1}.json"
+AssetsSavePath="{0}\\assets\\objects\\{1}\\{2}"
+LegacySavePath="{0}\\assets\\virtual\\legacy\\{1}"
+VersionJSONSavePath="{0}\\versions\\{1}\\{1}.json"
+VersionMainFileSavePath="{0}\\versions\\{1}\\{1}.jar"
+LibrariesSavePath="{0}\\libraries\\{1}"
+Log4j2ConfigSavePath="{0}\\assets\\log_configs\\{1}"
 
 #------备忘录------
 #1.获取前两位字符是[:2]
@@ -97,9 +100,6 @@ class AccountManager:
             },
             headers={
                 "Content-Type":"application/x-www-form-urlencoded"
-            },
-            params={
-                "mtk":"zh-CN"
             }
         )
         if Response.status_code!=200:
@@ -112,7 +112,11 @@ class AccountManager:
             VerificationURL:str=Response.json()["verification_uri"] #通常来讲,网址是https://www.microsoft.com/link，并且会在登录时跳转到account.live.com然后被GFW紫菜
             InterVal:int=Response.json()["interval"]
             ExpiresIn:int=Response.json()["expires_in"]
-            print(f"请在 {ExpiresIn} 秒内打开 {VerificationURL} 并输入 {UserCode} 进行身份验证...")
+            Message_English:str=Response.json()["message"]
+            os.system(f"echo {UserCode}|clip")
+            print(f"请在 {ExpiresIn} 秒内打开 {VerificationURL} 并输入 {UserCode} 进行身份验证...\r\n\放心,不需要你输入,我们已经帮你复制到剪贴板里了()") #为中国人准备的提示,作者亲自生成()(地理课上讲中文是使用人口最多的语言,外加作者就是中国人,所以中文肯定是要加的)
+            print(Message_English) #为外国人准备的提示,微软官方出品(然后地理课上讲英语是适用范围最广的语言,理论上只要有英语提示外国人就能看懂?)
+            OpenBrowser(VerificationURL)
             Count:int=0
             while True:
                 Count+=1
@@ -522,7 +526,7 @@ def DownloadVersion(Version:dict,DownloadPath:str)->int:
             with TextIOWrapper(FileIO(VersionFilePath,mode="w"),encoding="UTF-8") as IOObject:
                 dump(get(VersionJSONUrl).json(),IOObject,indent=4,ensure_ascii=False)
                 return 0
-        except Exception as e:
+        except BaseException as e:
             print("下载失败!")
             return -1
     else:
@@ -539,8 +543,15 @@ def DownloadFile(Url:str,Path:str)->int:
     另外,这是下载整个文件!如果需要分块下载请使用DownloadFileWithMutilThread函数!
     """
     try:
+        Dir:str="\\".join(Path.split("\\")[:-1])
+        makedirs(Dir,exist_ok=True)
         with FileIO(Path,mode="w") as IOObject:
-            IOObject.write(get(Url).content)
+            try:
+                Data:bytes=get(Url).content
+                IOObject.write(Data)
+            except BaseException as e:
+                print(f"{Path}下载失败!死因:{e}")
+                return -1
         return 0
     except:
         return -1
@@ -558,8 +569,13 @@ def DownloadBlock(Url:str,TempPath:str,Start:int,End:int)->int:
     Range:str="bytes={0}-{1}".format(Start,End)
     try:
         with FileIO(TempPath,mode="w") as IOObject:
-            Response=get(Url,headers={"Range":Range})
-            print(Response.status_code)
+            try:
+                Response=get(Url,headers={"Range":Range})
+            except Exception as E:
+                print(f"{Url}块下载失败!死因:{E}")
+            #print(Response.status_code) #调试用语句,206表示部分内容下载成功
+            if Response.status_code!=206:
+                return -1
             IOObject.write(Response.content)
         return 0
     except:
@@ -567,7 +583,7 @@ def DownloadBlock(Url:str,TempPath:str,Start:int,End:int)->int:
 
 def DownloadFileWithMutilThread(Url:str,Path:str,ThreadCount:int=32)->int:
     """
-    多线程下载文件(如果文件大小大于1MB就使用)\r\n
+    多线程下载文件(如果文件大小大于8MB就使用)\r\n
     传入的参数如下:\r\n
     - 文件URL(字符串)\r\n
     - 保存路径(字符串)\r\n
@@ -575,16 +591,19 @@ def DownloadFileWithMutilThread(Url:str,Path:str,ThreadCount:int=32)->int:
     返回错误码(0表示成功,-1表示失败)
     """
     try:
-        FileSize:int=int(get(Url,stream=True).headers.get("Content-Length",0))
-        if FileSize<=1048576: #如果文件大小小于1MB,就直接下载
+        Dir:str="\\".join(Path.split("\\")[:-1])
+        makedirs(Dir,exist_ok=True)
+        try:
+            FileSize:int=int(head(Url).headers.get("Content-Length",0))
+        except Exception as E:
+            print(f"{Url}获取文件大小失败!死因:{E}")
+            return -1
+        if FileSize<=8388608: #如果文件大小小于8MB,就直接下载
             return DownloadFile(Url,Path)
         else:
             #先把所有区块下载到临时目录
             TempDir:str="{}~TMP\\".format(Path)
-            if not exists(TempDir):
-                makedirs(TempDir)
-            if not exists("\\".join(Path.split("\\")[:-1])):
-                makedirs("\\".join(Path.split("\\")[:-1]))
+            makedirs(TempDir,exist_ok=True)
             ChunkSize:int=FileSize//ThreadCount
             ThreadPool=ThreadPoolExecutor(max_workers=ThreadCount)
             Results:list[concurrent.futures.Future]=[]
@@ -597,11 +616,14 @@ def DownloadFileWithMutilThread(Url:str,Path:str,ThreadCount:int=32)->int:
             #等待所有线程完成
             ThreadPool.shutdown()
 
-            #检查所有线程是否成功,如果不小心抛出了异常就会被外部的try...except捕获,所以这里不用再try...except了
+            #检查所有线程是否成功
             Result:int=0
-            for _Result in Results:
-                Result+=int(fabs(_Result.result()*1.0))
-            if Result!=0:
+            try:
+                for _Result in Results:
+                    Result+=abs(_Result.result())
+                if Result!=0:
+                    return -1
+            except:
                 return -1
             
             #接下来的步骤是合并文件,这一步不需要网络连接,但IO阻塞还是不可避免的()
@@ -613,21 +635,20 @@ def DownloadFileWithMutilThread(Url:str,Path:str,ThreadCount:int=32)->int:
                     remove(TempPath)
                 rmdir(TempDir)
         return 0
-    except:
-        print(f"{Path}下载失败!")
+    except BaseException as E:
+        print(f"{Path}下载失败!死因:{E}")
         return -1
 
-def VerifyFile(FilePath:str,SHA1:str)->bool:
+def VerifyFileSHA1(FilePath:str,SHA1:str)->bool:
     """
-    校验文件是否正确\r\n
-    通过SHA1校验\r\n
+    校验文件SHA1值是否正确\r\n
     传入的参数如下:\r\n
     - 文件路径(字符串)\r\n
     - SHA1值(字符串)\r\n
     返回布尔值(True表示正确,False表示错误)
     """
     try:
-        with FileIO(FilePath,mode="rb") as IOObject:
+        with FileIO(FilePath,mode="r") as IOObject:
             SHA1Object=sha1()
             while Data:=IOObject.read(1024):
                 SHA1Object.update(Data)
@@ -635,353 +656,485 @@ def VerifyFile(FilePath:str,SHA1:str)->bool:
     except:
         return False
 
-def DownloadLibrary(LibraryInfo:dict,GameRoot:str,ThreadCount:int=32)->int:
+def VerifyFileSize(FilePath:str,Size:int)->bool:
     """
-    用于开启单个线程的下载库函数\r\n
-    参数懂得都懂好吧()
-    """
-    DownloadInfo:dict=LibraryInfo.get("downloads",{})
-    if not DownloadInfo:
-        return -1
-    Artifact:dict=DownloadInfo.get("artifact",{})
-    if not Artifact:
-        return -1
-    DownloadPath:str=GameRoot+("\\libraries\\"+Artifact.get("path",None)).replace("/","\\")
-    if not DownloadPath:
-        LibraryName:str=LibraryInfo.get("name")
-        if not DownloadPath:
-            return -1
-        else:
-            LibraryNameInfo:list[str]=LibraryName.split(":",1)
-            PackageClass:str=LibraryNameInfo[0].replace(".","\\")
-            PackageName:str=LibraryNameInfo[1].replace(":","-")
-            DownloadPath:str=GameRoot+("\\libraries"+"\\"+PackageName+"\\"+PackageClass+".jar")
-    DownloadLink:str=Artifact.get("url",None)
-    if not DownloadLink:
-        return -1
-    SHA1:str=Artifact.get("sha1",None)
-    if not SHA1:
-        return -1
-    FileSize:int=Artifact.get("size",0)
-    if not FileSize:
-        return -1
-    if not exists(DownloadPath):
-        print("正在下载文件:{0}".format(DownloadPath))
-        DownloadFileWithMutilThread(DownloadLink,DownloadPath,ThreadCount)
-        if not (VerifyFile(DownloadPath,SHA1) and getsize(DownloadPath)==FileSize):
-            print("文件校验失败!")
-            return -2
-        else:
-            print("下载成功!")
-            return 0
-    else:
-        print("文件已存在,正在校验...")
-        if not (VerifyFile(DownloadPath,SHA1) and getsize(DownloadPath)==FileSize):
-            print("文件校验失败!")
-            print("正在下载文件:{0}".format(DownloadPath))
-            DownloadFileWithMutilThread(DownloadLink,DownloadPath)
-            if not (VerifyFile(DownloadPath,SHA1) and getsize(DownloadPath)==FileSize):
-                print("下载后的文件校验失败!")
-                return -2
-        else:
-            print("文件校验成功!该文件可用!")
-            return 0
-
-def DownloadAssetFile(AssetInfo:dict,LegacySavePath:str,GameRoot:str,ThreadCount:int=32)->int:
-    """
-    单个下载资源文件函数(为了给线程池传参数())\r\n
-    参数如下:\r\n
-    - 资源信息(字典)\r\n
-    - 旧版存档路径(字符串)\r\n
-    - 游戏根目录(字符串)\r\n
-    - 线程数(整数,默认为32)\r\n
-    """
-    AssetSHA1:str=AssetInfo.get("hash",None)
-    if not AssetSHA1:
-        print("没有找到资源文件的SHA1值!")
-        return -1
-    TwoCharOfSHA1:str=AssetSHA1[:2]
-    AssetFileSavePath:str=AssetsSavePath.format(GameRoot,TwoCharOfSHA1,AssetSHA1)
-    AssetDownloadLink:str=AssetsDownloadLink.format(TwoCharOfSHA1,AssetSHA1)
-    AssetSize:int=AssetInfo.get("size",0)
-    if not AssetSize:
-        print("没有找到资源文件的大小!")
-        return -1
-    if not exists(AssetFileSavePath):
-        print("正在下载资源文件:{0}".format(AssetFileSavePath))
-        DownloadFileWithMutilThread(AssetDownloadLink,AssetFileSavePath,ThreadCount)
-        if not (VerifyFile(AssetFileSavePath,AssetSHA1) and getsize(AssetFileSavePath)==AssetSize):
-            print("资源文件校验失败!")
-            return -1
-        else:
-            print(f"下载{AssetSHA1}成功!")
-            print(f"正在保存至旧版资源路径...")
-            if not exists(LegacySavePath):
-                copyfile(AssetFileSavePath,LegacySavePath)
-            else:
-                if VerifyFile(LegacySavePath,AssetSHA1):
-                    print(f"旧版资源文件有效,无需复制!")
-                else:
-                    remove(LegacySavePath)
-                    copyfile(AssetFileSavePath,LegacySavePath)
-                    print(f"旧版资源文件无效,已复制新资源文件!")
-
-    else:
-        print("资源文件已存在,正在校验...")
-        if not (VerifyFile(AssetFileSavePath,AssetSHA1) and getsize(AssetFileSavePath)==AssetSize):
-            print("资源文件校验失败!")
-            print("正在下载资源文件:{0}".format(AssetFileSavePath))
-            DownloadFileWithMutilThread(AssetDownloadLink,AssetFileSavePath,ThreadCount)
-            if not (VerifyFile(AssetFileSavePath,AssetSHA1) and getsize(AssetFileSavePath)==AssetSize):
-                print("下载后的资源文件校验失败!")
-                return -1
-            else:
-                print(f"下载{AssetSHA1}成功!")
-                print(f"正在保存至旧版资源路径...")
-                if not exists(LegacySavePath):
-                    copyfile(AssetFileSavePath,LegacySavePath)
-                else:
-                    if VerifyFile(LegacySavePath,AssetSHA1):
-                        print(f"旧版资源文件有效,无需复制!")
-                    else:
-                        remove(LegacySavePath)
-                        copyfile(AssetFileSavePath,LegacySavePath)
-                        print(f"旧版资源文件无效,已复制新资源文件!")
-        else:
-            print(f"资源文件{AssetSHA1}校验成功!该文件可用!")
-            print(f"正在保存至旧版资源路径...")
-            if not exists(LegacySavePath):
-                copyfile(AssetFileSavePath,LegacySavePath)
-            else:
-                if VerifyFile(LegacySavePath,AssetSHA1):
-                    print(f"旧版资源文件有效,无需复制!")
-                else:
-                    remove(LegacySavePath)
-                    copyfile(AssetFileSavePath,LegacySavePath)
-                    print(f"旧版资源文件无效,已复制新资源文件!")
-    return 0
-
-def DownloadAssetsFile(AssetsIndex:list[tuple[str,dict]],GameRoot:str,ThreadCount:int=32)->int:
-    """
-    下载资源文件,通常在补全文件的时候使用\r\n
-    参数如下:\r\n
-    - 资源索引(列表,元组的列表)\r\n
-    - 游戏根目录(字符串)\r\n
-    - 线程数(整数,默认为32)\r\n
-    """
-    Results:list=[]
-    ThreadPool=ThreadPoolExecutor(max_workers=ThreadCount)
-    for LegacySavePath,AssetInfo in AssetsIndex:
-        Results.append(ThreadPool.submit(DownloadAssetFile,AssetInfo,LegacySavePath,GameRoot,ThreadCount))
-    
-    #等待所有线程完成
-    ThreadPool.shutdown()
-    #检查所有线程是否成功,这次外部没有try...except,所以这里需要防止不小心抛出异常
-    try:
-        Result:int=0
-        for _Result in Results:
-            Result+=int(fabs(_Result.result()*1.0))
-        if Result!=0:
-            return -1
-    except:
-        return -1
-    return 0
-
-def CompleteFiles(Version:str,GameRoot:str,ThreadCount:int=32,OneFileThreadCount:int=32)->int:
-    """
-    补全文件(通常在启动游戏之前)\r\n
+    校验文件大小是否正确\r\n
     传入的参数如下:\r\n
-    - 版本名称(字符串),例如"25w04a"\r\n
-    - 下载路径(字符串)(通常是游戏目录,一般是.minecraft,当然你也可以自定义)\r\n
-    - 线程数(整数,默认为32)\r\n
-    - 单个文件下载线程数(整数,默认为32)\r\n
-    返回错误码(0表示成功,-1表示失败)
+    - 文件路径(字符串)\r\n
+    - 文件大小(整数)\r\n
+    返回布尔值(True表示正确,False表示错误)
     """
-    #基础信息
-
-    VersionFilePath:TextIOWrapper=TextIOWrapper(FileIO("{0}\\Versions\\{1}\\{1}.json".format(GameRoot,Version)),encoding="UTF-8")
-    VersionInfo:dict=load(VersionFilePath)
-    AssetsIndex:dict=VersionInfo.get("assetIndex",{})
-    if not AssetsIndex:
-        print("没有找到AssetsIndex!")
-        return -1
-    Client_or_Server_Download:dict=VersionInfo.get("downloads",{})
-    if not Client_or_Server_Download:
-        print("没有找到下载信息!")
-        return -1
-    Libraries:list[dict]=VersionInfo.get("libraries",[])
-    if not Libraries:
-        print("没有找到库信息!")
-        return -1
-    
-    #下载库文件
-    Results:list[concurrent.futures.Future]=[]
-    ThreadPool=ThreadPoolExecutor(max_workers=ThreadCount)
-    for LibraryInfo in Libraries:
-        Results.append(ThreadPool.submit(DownloadLibrary,LibraryInfo,GameRoot,OneFileThreadCount))
-    #等待所有线程完成
-    ThreadPool.shutdown()
-    #检查所有线程是否成功,这次外部没有try...except,所以这里需要防止不小心抛出异常
     try:
-        Result:int=0
-        for _Result in Results:
-            Result+=int(fabs(_Result.result()*1.0))
-        if Result!=0:
-            return -1
+        SizeOnDisk:int=getsize(FilePath)
+        return SizeOnDisk==Size
     except:
+        return False
+
+def DownloadOneFile(File:dict,ThreadCount:int=32):
+    """
+    下载单个文件(用于创建线程)\r\n
+    不用你调用\r\n
+    """
+    try:
+        SavePath:str=File.get("SavePath",False)
+        if not SavePath:
+            print("\033[31m没保存路径老子不干了啊~\033[0m")
+            return ({"SavePath":"-/-","State":"缺少必要信息"},File)
+        DownloadLink:str=File.get("DownloadLink",False)
+        if not DownloadLink:
+            print("\033[31m连链接都没有劳资下个集贸啊?\033[0m")
+            return ({"SavePath":SavePath,"State":"缺少必要信息"},File)
+        WillVerifySHA1:bool=True
+        SHA1:str=File.get("SHA1",False)
+        if not SHA1:
+            print("\033[32m没SHA1,那就不校验SHA1()\033[0m")
+            WillVerifySHA1=False
+        WillVerifyFileSize:bool=True
+        Size:int=File.get("Size",False)
+        if not Size:
+            print("\033[32m没文件大小,那就不校验文件大小了\033[0m")
+            WillVerifyFileSize=False
+        if not (WillVerifySHA1 and WillVerifyFileSize):
+            print(f"\033[31m警告:该文件{SavePath}的两种校验方式都无法执行,将不会保证文件的有效性!最好立即检查配置!\033[0m")
+        try:
+            Result:int=DownloadFileWithMutilThread(Url=DownloadLink,Path=SavePath,ThreadCount=ThreadCount) if not exists(SavePath) else 0
+        except BaseException as E: #我们总会有不顺利的时候(试图模仿微软式中文)()(当Mojang服务器被我爬宕机的时候就会抛异常,可能是ProtocolError,也可能是ConnectionError,还可能是SSLError或其他的)
+            print(f"\033[31m{SavePath}下载失败!死因:{E}\033[0m")
+            return ({"SavePath":SavePath,"State":"失败","MoreInfo":f"下载时出现异常,信息为:{E}"},File)
+        
+        VerifyFileSHA1Success:bool=True
+        VerifyFileSizeSuccess:bool=True
+        if Result==0:
+            if WillVerifySHA1:
+                if VerifyFileSHA1(FilePath=SavePath,SHA1=SHA1):
+                    print(f"\033[32m{SavePath}SHA1校验成功!\033[0m")
+                else:
+                    print(f"\033[31m{SavePath}SHA1校验失败!")
+                    VerifyFileSHA1Success=False
+            if WillVerifyFileSize:
+                if VerifyFileSize(FilePath=SavePath,Size=Size):
+                    print(f"\033[32m{SavePath}大小校验成功!\033[0m")
+                else:
+                    print(f"\033[31m{SavePath}大小校验失败!")
+                    VerifyFileSizeSuccess=False
+            if VerifyFileSHA1Success and VerifyFileSizeSuccess:
+                print(f"\033[32m{SavePath}下载成功!\033[0m")
+                return ({"SavePath":SavePath,"State":"成功"},File)
+            else:
+                print(f"\033[31m{SavePath}校验失败,将会重试...\033[0m")
+                print(f"\033[31m已删除无效的{SavePath}")
+                remove(SavePath)
+                return ({"SavePath":SavePath,"State":"失败","MoreInfo":"校验失败"},File)
+        else:
+            print(f"\033[31m{SavePath}下载失败,将会重试...\033[0m")
+            return ({"SavePath":SavePath,"State":"失败","MoreInfo":"下载时出错"},File)
+    except BaseException as E:
+        print(f"\033[31m{SavePath}下载失败,死因:{E},将会重试...\033[0m")
+        return ({"SavePath":SavePath,"State":"失败","MoreInfo":f"出现异常,信息为:{E}"},File)
+    
+
+def DownloadFiles(*args:list[dict]|dict,ThreadCount:int=32,OneFileThreadCount:int=32,RetryCount:int=10,Interval:int=3,**kwargs:list[dict]|dict)->tuple[list[dict],list[dict]]:
+    """
+    下载一堆文件\r\n
+    传入的参数如下:
+    - 依托参数,全是列表,列表里面全是字典(当然也可以直接传个字典),字典的键值对如下:
+    * DownloadLink:下载链接(字符串)
+    * SavePath:保存路径(字符串)
+    * SHA1:SHA1值(字符串)(不是必要的,但是建议填上)
+    * Size:用于校验的文件大小(整数)(不是必要的,但是建议填上)
+    * Size和SHA1可以同时填写,也可以只填一个,也可以都不填,但是都不填的话会显示警告
+    - 线程数(整数,默认为32)
+    - 重试次数(整数,默认为10)
+    - 重试间隔(整数,默认为3秒)\r\n
+    返回值是一个列表,列表里面是每个文件状态,是一个元组,里面有两个列表,第一个列表是存储所有下载失败的文件的状态的列表,第二个列表是存储所有下载失败的文件的状态的列表\r\n
+    所有列表里面的元素都是字典,字典的键值对如下:\r\n
+    * SavePath:保存路径(字符串)
+    * State:状态(字符串,成功/失败)
+    * MoreInfo:更多信息(字符串,失败时才有这个键,成功时这个键不存在)
+    通常来讲,成功的列表里面的字典的State值是"成功",失败的列表里面的字典的State值是"失败"/"缺少信息"\r\n
+    如果State值是"缺少信息",那SavePath的值可能是-/-,表示你没有指定保存路径
+    """
+    Success:list[dict]=[] #下载成功的列表
+    WillRetry:list[dict]=[] #下载失败过,即将重试的列表
+    Failed:list[dict]=[] #彻底下载失败的列表
+    Files:list[dict]=[] #所有待下载的文件列表
+    for Arg in args+tuple(kwargs.values()):
+        if isinstance(Arg,list):
+            for Item in Arg:
+                if isinstance(Item,dict):
+                    Files.append(Item)
+        elif isinstance(Arg,dict):
+            Files.append(Arg)
+    
+    ThreadPool:ThreadPoolExecutor=ThreadPoolExecutor(max_workers=ThreadCount)
+    Results:list[concurrent.futures.Future]=[]
+    for File in Files:
+        Results.append(ThreadPool.submit(DownloadOneFile,File,OneFileThreadCount))
+    ThreadPool.shutdown()
+    for Result in Results:
+        (_Result,FileInfo)=Result.result()
+        if _Result["State"]=="成功":
+            Success.append(_Result)
+        elif _Result["State"]=="失败":
+            WillRetry.append(FileInfo)
+        else:
+            Failed.append(_Result)
+    
+    for Retry in range(RetryCount):
+        if len(WillRetry)==0:
+            break
+        print(f"\033[32m还有{len(WillRetry)}个文件下载失败,即将在{Interval}秒后重试({Retry+1}/{RetryCount})...\033[0m")
+        sleep(Interval) #防止服务器宕机
+        ThreadPool:ThreadPoolExecutor=ThreadPoolExecutor(max_workers=ThreadCount)
+        Results:list[concurrent.futures.Future]=[]
+        print(f"\033[31m还有{len(WillRetry)}个文件下载失败,即将重试({Retry+1}/{RetryCount})...\033[0m")
+        for File in WillRetry:
+            Results.append(ThreadPool.submit(DownloadOneFile,File,OneFileThreadCount))
+        ThreadPool.shutdown()
+        for Result in Results:
+            (_Result,FileInfo)=Result.result()
+            if _Result["State"]=="成功":
+                Success.append(_Result)
+                WillRetry.remove(FileInfo)
+            elif _Result["State"]=="失败":
+                if Retry+1==RetryCount:
+                    Failed.append(_Result)
+                else:
+                    continue
+            else:
+                Failed.append(_Result)
+        sleep(1) #留给用户反应时间
+    
+    SuccessLength:int=len(Success)
+    FailedLength:int=len(Failed)
+    print("\033[0m\033[32m共有{}个文件下载成功!".format(SuccessLength))
+    print("\033[0m\033[32m下载成功的列表:")
+    if SuccessLength!=0:
+        for SuccessFile in Success:
+            print(f"文件路径:{SuccessFile['SavePath']}")
+            print(f"状态:{SuccessFile['State']}")
+    else:
+        print("无")
+    
+    print("\033[0m\033[31m共有{}个文件下载失败!".format(FailedLength))
+    print("\033[0m\033[31m下载失败的列表:")
+    if FailedLength!=0:
+        for FailedFile in Failed:
+            print(f"文件路径:{FailedFile['SavePath']}")
+            print(f"状态:{FailedFile['State']}")
+            print(f"死因:{FailedFile['MoreInfo']},重试次数超过{RetryCount}次")
+    else:
+        print("无")
+    
+    print("\033[0m")
+    return (Success,Failed)
+
+def CompleteFiles(Version:str,GameRoot:str,ThreadCount:int=32,OneFileThreadCount:int=32,RetryCount:int=10,Interval:int=3)->int:
+    """
+    补全文件\r\n
+    传入的参数如下:
+    - 版本号(字符串)
+    - 游戏根目录(字符串)
+    - 线程数(整数,默认为32)
+    - 单个文件线程数(整数,默认为32)
+    - 重试次数(整数,默认为10)\r\n
+    返回错误码(0表示成功,-1表示失败)\r\n
+    这个补全文件是被我重写过的()
+    """
+    try:
+        VersionJSONFile:TextIOWrapper=TextIOWrapper(FileIO(VersionJSONSavePath.format(GameRoot,Version),mode="r"),encoding="UTF-8")
+    except (FileNotFoundError,OSError):
+        print(f"\033[31m{Version}的版本文件不存在/拒绝访问!死因:文件不存在或无法打开文件\033[0m")
+    try:
+        VersionJSON:dict=load(VersionJSONFile)
+    except JSONDecodeError as E:
+        print(f"\033[31m{Version}的版本文件解析失败!死因:{E}\033[0m")
+        return -1
+    VersionJSONFile.close()
+    del VersionJSONFile #释放内存(IO对象:I'm Free~)
+    
+    #客户端主文件下载信息
+    ClientFileInfo:dict=VersionJSON.get("downloads",{"downloads":{}}).get("client",{})
+    if not ClientFileInfo:
+        print(f"\033[31m{Version}的版本文件中没有客户端主文件的下载信息\033[0m")
+        return -1
+    ClientFileSize:int=ClientFileInfo.get("size",0)
+    if not bool(ClientFileSize):
+        print(f"\033[31m{Version}的版本文件中客户端主文件的大小信息明显不合理!(你家MC的客户端JAR文件0字节?这TM是空文件吧?)\033[0m")
+        return -1
+    ClientFileSHA1:str=ClientFileInfo.get("sha1","")
+    if not ClientFileSHA1:
+        print("\033[31m警告:该版本的客户端主文件没有SHA1值,将不会进行校验!最好立即检查配置!(你这个JSON文件是不是有问题啊...一般的版本JSON都是有这玩意的啊?)\033[0m")
+    ClientFileDownloadLink:str=ClientFileInfo.get("url",False)
+    if not ClientFileDownloadLink:
+        print(f"\033[31m{Version}的版本文件中客户端主文件的下载链接信息不完整(这个文件有问题实锤了())\033[0m")
+        return -1
+    ClientFileSavePath:str=VersionMainFileSavePath.format(GameRoot,Version)
+    ClientDownloadInfo:dict={
+        "DownloadLink":ClientFileDownloadLink,
+        "SavePath":ClientFileSavePath,
+        "SHA1":ClientFileSHA1,
+        "Size":ClientFileSize
+    }
+    
+    #依赖库文件下载信息
+    Libraries:list[dict]=VersionJSON.get("libraries",[])
+    if not Libraries:
+        print(f"\033[31m{Version}的版本文件中没有依赖库的信息\033[0m")
         return -1
     
-    #下载资源索引文件
-    AssetsIndexDownloadLink:str=Client_or_Server_Download.get("url",None)
+    LibrariesDownloadInfo:list[dict]=[]
+    for Library in Libraries:
+        LibraryDownloadInfo:dict=Library.get("downloads",{"artifact":{}}).get("artifact",{})
+        if not LibraryDownloadInfo:
+            print("\033[31m警告:该版本的依赖库没有下载信息,将不会进行下载!\033[0m")
+            continue
+        LibraryDownloadLink:str=LibraryDownloadInfo.get("url","")
+        if not LibraryDownloadLink:
+            print("\033[31m警告:该依赖库没有下载链接,将不会进行下载!\033[0m")
+            continue
+        LibraryFileSHA1=LibraryDownloadInfo.get("sha1","")
+        if not LibraryFileSHA1:
+            print("\033[31m警告:该依赖库没有SHA1值,将不会校验SHA1!\033[0m")
+        LibraryFileSize:int=LibraryDownloadInfo.get("size",0)
+        if not LibraryFileSize:
+            print("\033[31m警告:该依赖库没有文件大小,将不会校验文件大小!(这文件怕是不完整吧?)\033[0m")
+        LibraryFilePath:str=LibraryDownloadInfo.get("path","").replace("/","\\")
+        if not LibraryFilePath:
+            LibraryName:str=Library.get("name","")
+            if not LibraryName:
+                print("\033[31m警告:该依赖库连名称都没有!无法构建保存路径!\033[0m")
+                continue
+            else:
+                ParsedLibraryName:str=LibraryName.split(":")
+                if len(ParsedLibraryName)<3:
+                    print("\033[31m警告:该依赖库名称格式不正确!无法构建保存路径!\033[0m")
+                    continue
+                else:
+                    LibraryGroup:str=ParsedLibraryName[0]
+                    LibraryArtifact:str=ParsedLibraryName[1]
+                    LibraryVersion:str=ParsedLibraryName[2]
+                    LibraryFilePath:str="{}\\{}-{}.jar".format(LibraryGroup.replace(".","\\"),LibraryArtifact,LibraryVersion)
+        
+        FullLibraryFilePath:str=LibrariesSavePath.format(GameRoot,LibraryFilePath)
+        LibrariesDownloadInfo.append({
+            "DownloadLink":LibraryDownloadLink,
+            "SavePath":FullLibraryFilePath,
+            "SHA1":LibraryFileSHA1,
+            "Size":LibraryFileSize
+        })
+    
+    #Log4j2配置文件下载信息()
+    Log4j2ConfigFileInfo:dict=VersionJSON.get("logging",{"logging":{}}).get("client",{"client":""}).get("file",{})
+    if not Log4j2ConfigFileInfo:
+        print("\033[31m警告:无法获取Log4j2配置文件下载信息!\033[0m")
+        return -1
+    Log4j2ConfigFileDownloadLink:str=Log4j2ConfigFileInfo.get("url","")
+    if not Log4j2ConfigFileDownloadLink:
+        print("\033[31m警告:Log4j2配置文件下载链接不完整!\033[0m")
+        return -1
+    Log4j2ConfigFileName:str=Log4j2ConfigFileInfo.get("id","")
+    if not Log4j2ConfigFileName:
+        print("\033[31m警告:Log4j2配置文件名称有问题!将使用自定义的名称!\033[0m")
+        Log4j2ConfigFileName=f"client-{Version}.xml"
+    
+    Log4j2ConfigFileSavePath:str=Log4j2ConfigSavePath.format(GameRoot,Log4j2ConfigFileName)
+    Log4j2ConfigFileSHA1:str=Log4j2ConfigFileInfo.get("sha1","")
+    Log4j2ConfigFileSize:int=Log4j2ConfigFileInfo.get("size",0)
+    Log4j2ConfigDownloadInfo:dict={
+        "DownloadLink":Log4j2ConfigFileDownloadLink,
+        "SavePath":Log4j2ConfigFileSavePath,
+        "SHA1":Log4j2ConfigFileSHA1,
+        "Size":Log4j2ConfigFileSize
+    }
+    
+    #下载资源索引文件和资源文件
+    AssetsIndexInfo:dict=VersionJSON.get("assetIndex",{})
+    if not AssetsIndexInfo:
+        print("\033[31m警告:无法获取资源索引文件信息!\033[0m")
+        return -1
+    AssetsIndexDownloadLink:str=AssetsIndexInfo.get("url","")
     if not AssetsIndexDownloadLink:
-        print("没有找到AssetsIndex下载链接!")
+        print("\033[31m警告:资源索引文件下载链接不完整!\033[0m")
         return -1
-    AssetsIndexSHA1:str=AssetsIndex.get("sha1",None)
+    AssetsIndexID:str=AssetsIndexInfo.get("id","")
+    if not AssetsIndexID:
+        print("\033[31m警告:无法找到资源索引文件ID!\033[0m")
+        return -1
+    _AssetsIndexSavePath:str=AssetsIndexSavePath.format(GameRoot,AssetsIndexID)
+    AssetsIndexSHA1:str=AssetsIndexInfo.get("sha1","")
     if not AssetsIndexSHA1:
-        print("没有找到AssetsIndex的SHA1值!")
-        return -1
-    AssetsIndexSize:int=Client_or_Server_Download.get("size",0)
+        print("\033[31m警告:资源索引文件没有SHA1值,将不会进行校验!\033[0m")
+    AssetsIndexSize:int=AssetsIndexInfo.get("size",0)
     if not AssetsIndexSize:
-        print("没有找到AssetsIndex的大小!")
-        return -1
-    AssetsIndexID:str=AssetsIndex.get("id",None)
-    AssetsIndexPath:str=AssetsIndexSavePath.format(GameRoot,AssetsIndexID)
-    if not exists(AssetsIndexPath):
-        print("正在下载AssetsIndex文件:{0}".format(AssetsIndexPath))
-        DownloadFileWithMutilThread(AssetsIndexDownloadLink,AssetsIndexPath,OneFileThreadCount)
-        if not (VerifyFile(AssetsIndexPath,AssetsIndexSHA1) and getsize(AssetsIndexPath)==AssetsIndexSize):
-            print("AssetsIndex文件校验失败!")
-            return -2
-        else:
-            print("下载成功!")
+        print("\033[31m警告:资源索引文件大小信息不完整!将不会进行校验!\033[0m")
+    AssetsIndexDownloadInfo:dict={
+        "DownloadLink":AssetsIndexDownloadLink,
+        "SavePath":_AssetsIndexSavePath,
+        "SHA1":AssetsIndexSHA1,
+        "Size":AssetsIndexSize
+    }
+
+    #下载文件
+    Success,Failed=DownloadFiles(
+        ClientDownloadInfo, #客户端主文件
+        LibrariesDownloadInfo, #依赖库文件
+        Log4j2ConfigDownloadInfo, #Log4j2配置文件
+        AssetsIndexDownloadInfo, #资源索引文件需要比资源文件先下载
+        ThreadCount=ThreadCount, #线程数
+        OneFileThreadCount=OneFileThreadCount, #单个文件线程数
+        RetryCount=RetryCount, #重试次数
+        Interval=Interval #重试间隔
+    )
+    if len(Failed)>0:
+        print("\033[31m本次补全文件有部分文件下载失败!\033[0m")
+        return -2
+    elif Success:
+        print("\033[32m本次补全文件全部下载成功!\033[0m")
     else:
-        print("AssetsIndex文件已存在,正在校验...")
-        if not (VerifyFile(AssetsIndexPath,AssetsIndexSHA1) and getsize(AssetsIndexPath)==AssetsIndexSize):
-            print("AssetsIndex文件校验失败!")
-            print("正在下载AssetsIndex文件:{0}".format(AssetsIndexPath))
-            DownloadFileWithMutilThread(AssetsIndexDownloadLink,AssetsIndexPath,OneFileThreadCount)
-            if not (VerifyFile(AssetsIndexPath,AssetsIndexSHA1) and getsize(AssetsIndexPath)==AssetsIndexSize):
-                print("下载后的AssetsIndex文件校验失败!")
-                return -2
-        else:
-            print("AssetsIndex文件校验成功!该文件可用!")
+        print("\033[31m本次补全文件没有下载任何文件!\033[0m")
+        return -3
     
     #下载资源文件
-    AssetsInfo:dict=load(AssetsIndexPath)
-    AssetsIndex:list[tuple[str,dict]]=list(AssetsInfo.items())
-    Results:int=DownloadAssetsFile(AssetsIndex,GameRoot,OneFileThreadCount)
-    if Results!=0:
+    print("\033[32m别急,还有呢!接下来是为其他资源文件下载的特殊预案...\033[0m")
+    print("\033[32m到了此步骤,资源索引文件应该已经下好了,如果出现资源索引文件不存在/无法打开的情况,那就是出现Bug了\033[0m")
+    print("\033[32m请向作者反馈该Bug,尽管作者也可能被这个Bug整头大()\033[0m")
+    #尽管不太可能(如果解析失败,应该在上一步的校验就报错了;而如果是权限问题/文件不存在,那就应该在下载的时候就报错了)
+    try:
+        AssetsIndex:list[tuple[str,dict]]=list(load(TextIOWrapper(FileIO(_AssetsIndexSavePath,mode="r"),encoding="UTF-8"))["objects"].items())
+    except (FileNotFoundError,OSError,JSONDecodeError,Exception) as E:
+        if isinstance(E,JSONDecodeError):
+            print(f"\033[31m资源索引文件{_AssetsIndexSavePath}解析失败!死因:{E.__cause__}\033[0m")
+        else:
+            print(f"\033[31m资源索引文件{_AssetsIndexSavePath}不存在/拒绝访问!死因:文件不存在或无法打开文件\033[0m")
+        return -1
+    
+    AssetsFileDownloadInfo:list[dict]=[]
+    for LegacyPath,Asset in AssetsIndex:
+        AssetSHA1:str=Asset.get("hash","")
+        if not AssetSHA1:
+            print(f"\033[31m警告:资源文件{LegacyPath}没有SHA1值,将不会下载!(资源文件的下载链接获取必须依靠SHA1值)\033[0m")
+            continue
+        AssetSize:int=Asset.get("size",0)
+        if not AssetSize:
+            print(f"\033[31m警告:资源文件{LegacyPath}没有大小信息,将不会进行校验!\033[0m")
+        
+        TwoCharsForSHA1:str=AssetSHA1[:2]
+        AssetDownloadLink:str=AssetsDownloadLink.format(TwoCharsForSHA1,AssetSHA1)
+        AssetSavePath:str=AssetsSavePath.format(GameRoot,TwoCharsForSHA1,AssetSHA1)
+        LegacyAssetSavePath:str=LegacySavePath.format(GameRoot,LegacyPath.replace("/","\\"))
+        AssetDownloadInfo:dict={
+            "DownloadLink":AssetDownloadLink,
+            "SavePath":AssetSavePath,
+            "SHA1":AssetSHA1,
+            "Size":AssetSize,
+        }
+        LegacyAssetDownloadInfo:dict={
+            "DownloadLink":AssetDownloadLink,
+            "SavePath":LegacyAssetSavePath,
+            "SHA1":AssetSHA1,
+            "Size":AssetSize,
+        }
+        AssetsFileDownloadInfo.append(AssetDownloadInfo)
+        AssetsFileDownloadInfo.append(LegacyAssetDownloadInfo)
+    
+    Success,Failed=DownloadFiles(
+        AssetsFileDownloadInfo, #所有资源文件
+        ThreadCount=ThreadCount, #线程数
+        OneFileThreadCount=OneFileThreadCount, #单个文件线程数
+        RetryCount=RetryCount, #重试次数
+        Interval=Interval #重试间隔
+    )
+    if len(Failed)>0:
+        print("\033[31m本次资源文件下载有部分文件下载失败!\033[0m")
+        return -2
+    elif Success:
+        print("\033[32m本次资源文件下载全部成功!\033[0m")
+        return 0
+    else:
+        print("\033[31m本次资源文件下载没有下载任何文件!\033[0m")
         return -3
 
-    #下载客户端文件(倒数第二步)
-    ClientDownloadInfo:dict=Client_or_Server_Download.get("client",None)
-    if not ClientDownloadInfo:
-        print("没有找到客户端下载信息!")
-        return -1
-    ClientDownloadLink:dict=ClientDownloadInfo.get("url",None)
-    if not ClientDownloadLink:
-        print("没有找到客户端下载链接!")
-        return -1
-    ClientSHA1:str=ClientDownloadInfo.get("sha1",None)
-    if not ClientSHA1:
-        print("没有找到客户端的SHA1值!")
-        return -1
-    ClientSize:int=ClientDownloadInfo.get("size",0)
-    if ClientSize<=0:
-        print("没有找到客户端的大小!")
-        return -1
-    ClientPath:str="{0}\\Versions\\{1}\\{1}.jar".format(GameRoot,Version)
-    if not exists(ClientPath):
-        print("正在下载客户端文件:{0}".format(ClientPath))
-        DownloadFileWithMutilThread(ClientDownloadLink,ClientPath,OneFileThreadCount)
-        if not (VerifyFile(ClientPath,ClientSHA1) and getsize(ClientPath)==ClientSize):
-            print("客户端文件校验失败!")
-            return -4
-        else:
-            print("下载成功!")
-    else:
-        print("客户端文件已存在,正在校验...")
-        if not (VerifyFile(ClientPath,ClientSHA1) and getsize(ClientPath)==ClientSize):
-            print("客户端文件校验失败!")
-            print("正在下载客户端文件:{0}".format(ClientPath))
-            DownloadFileWithMutilThread(ClientDownloadLink,ClientPath,OneFileThreadCount)
-            if not (VerifyFile(ClientPath,ClientSHA1) and getsize(ClientPath)==ClientSize):
-                print("下载后的客户端文件校验失败!")
-                return -4
-        else:
-            print("客户端文件校验成功!该文件可用!")
-    
-    #下载Log4j配置文件(最后一步)
-    Log4jInfo:dict=VersionInfo.get("logging",{})
-    if not Log4jInfo:
-        print("没有找到Log4j配置文件信息!")
-        return -1
-    Log4jClientInfo:dict=Log4jInfo.get("client",{})
-    if not Log4jClientInfo:
-        print("没有在Log4j配置文件中找到客户端配置信息!")
-        return -1
-    Log4jDownloadInfo:dict=Log4jClientInfo.get("file",{})
-    if not Log4jDownloadInfo:
-        print("没有找到Log4j配置文件的下载信息!")
-        return -1
-    Log4jDownloadLink:str=Log4jDownloadInfo.get("url",None)
-    if not Log4jDownloadLink:
-        print("没有找到Log4j配置文件的下载链接!")
-        return -1
-    Log4jSHA1:str=Log4jDownloadInfo.get("sha1",None)
-    if not Log4jSHA1:
-        print("没有找到Log4j配置文件的SHA1值!")
-        return -1
-    Log4jProfileSize:int=Log4jDownloadInfo.get("size",0)
-    if Log4jProfileSize<=0:
-        print("没有找到Log4j配置文件的大小!")
-        return -1
-    Log4jProfileName:str=Log4jDownloadInfo.get("id",None)
-    if not Log4jProfileName:
-        Log4jProfileName="client-1.21.2.xml" #←默认的配置文件名,另外,最好使用高版本的Log4j配置文件,因为低版本的配置文件存在严重的漏洞(CVE-2021-44228),会导致电脑被别人报废
-                                             #↑具体信息请看:https://zh.minecraft.wiki/w/Tutorial:%E4%BF%AE%E5%A4%8DApache_Log4j2%E6%BC%8F%E6%B4%9E
-                                             #↑1.18.1-rc3及以上版本就没这个漏洞了
-                                             #↑1.18.1比1.18除了修复这个漏洞以外没有什么区别,甚至1.18.1兼容1.18的服务端和存档,所以想玩1.18的建议使用1.18.1或1.18.2
-                                             #↑1.17请使用-Dlog4j2.formatMsgNoLookups=true参数来修复
-                                             #↑1.12至1.16.5除了上述参数以外还要先下载https://piston-data.mojang.com/v1/objects/02937d122c86ce73319ef9975b58896fc1b491d1/log4j2_112-116.xml
-                                             #↑然后放到任意目录下并指定-Dlog4j.configurationFile=<你的存放配置文件的路径,应该是相对路径>(这文件名一看就是Mojang(划掉)ojng临时修复的)
-                                             #↑1.7至1.11.2请下载https://piston-data.mojang.com/v1/objects/4bb89a97a66f350bc9f73b3ca8509632682aea2e/log4j2_17-111.xml
-                                             #↑并同样指定-Dlog4j.configurationFile=<你的存放配置文件的路径,应该是相对路径>
-                                             #↑1.6.4及以下版本没有这个漏洞,不用担心
-    Log4jProfilePath:str="{0}\\assets\\log_configs\\{1}".format(GameRoot,Log4jProfileName) #这里的路径可以随意指定,但最好能让别人一看就知道这玩意是干什么的,比如官方启动器的.minecraft/assets/log_configs就很直观
-    if not exists(Log4jProfilePath):
-        print("正在下载Log4j配置文件:{0}".format(Log4jProfilePath))
-        DownloadFileWithMutilThread(Log4jDownloadLink,Log4jProfilePath,OneFileThreadCount)
-        if not (VerifyFile(Log4jProfilePath,Log4jSHA1) and getsize(Log4jProfilePath)==Log4jProfileSize):
-            print("Log4j配置文件校验失败!")
-            return -5
-        else:
-            print("下载成功!")
-    else:
-        print("Log4j配置文件已存在,正在校验...")
-        if not (VerifyFile(Log4jProfilePath,Log4jSHA1) and getsize(Log4jProfilePath)==Log4jProfileSize):
-            print("Log4j配置文件校验失败!")
-            print("正在下载Log4j配置文件:{0}".format(Log4jProfilePath))
-            DownloadFileWithMutilThread(Log4jDownloadLink,Log4jProfilePath,OneFileThreadCount)
-            if not (VerifyFile(Log4jProfilePath,Log4jSHA1) and getsize(Log4jProfilePath)==Log4jProfileSize):
-                print("下载后的Log4j配置文件校验失败!")
-                return -5
-        else:
-            print("Log4j配置文件校验成功!该文件可用!")
-    
-    print("所有文件补全成功!")
-    return 0
+def CheckJava(JavaPath:str="java",JavaVersion:str=22)->bool:
+    """
+    检查Java版本\r\n
+    传入的参数如下:
+    - Java路径(字符串,默认为"java")
+    - Java版本(字符串,默认为"1.8")\r\n
+    """
+    try:
+        JavaVersionOutput:str=Popen(f"{JavaPath} --version",shell=True,stdout=PIPE,stderr=PIPE).communicate()[0].decode("UTF-8")
+    except FileNotFoundError:
+        print(f"\033[31mJava路径{JavaPath}不存在!你根本没有安装/在{JavaPath}中安装Java!")
+        return False
+    JavaVersionOnDisk:float=re.findall("java (.*?) .*",JavaVersionOutput.split("\n")[0],re.S)[0]
+    return JavaVersionOnDisk>=JavaVersion
 
-#不写了该调试了
+#启动!
+def LaunchVersion(Version:str,GameRoot:str,Memory:int=1024,JavaPath:str="java",CustomArgs:str="",
+                  AccessTokem:str="",UUID:str="",Username:str="",UserType:str="msa",
+                  LauncherName:str="Simple Minecraft Launcher",LauncherVersion:str="0.0.1",
+                  CustomWindowTitle:str="",CustomWindowWidth:int=854,CustomWindowHeight:int=480)->int:
+    """
+    启动游戏\r\n
+    传入的参数如下:
+    - 版本号(字符串)
+    - 游戏根目录(字符串)
+    - 内存(整数,默认为1024)
+    - Java路径(字符串,默认为"java")
+    - 自定义参数(字符串,默认为"")
+    \r\n
+    - 登录令牌(字符串,默认为"")
+    - UUID(字符串,默认为"")
+    - 用户名(字符串,默认为"")
+    - 用户类型(字符串,默认为"msa")
+    \r\n
+    - 启动器名称(字符串,默认为"Simple Minecraft Launcher")
+    - 启动器版本(字符串,默认为"0.0.1")
+    - 自定义窗口标题(字符串,默认为"")
+    - 自定义窗口宽度(整数,默认为854)
+    - 自定义窗口高度(整数,默认为480)\r\n
+    返回错误码(0表示成功,-1表示失败)\r\n
+    """
+    try:
+        VersionJSONFile:TextIOWrapper=TextIOWrapper(FileIO(VersionJSONSavePath.format(GameRoot,Version),mode="r"),encoding="UTF-8")
+    except (FileNotFoundError,OSError):
+        print(f"\033[31m{Version}的版本文件不存在/拒绝访问!死因:文件不存在或无法打开文件\033[0m")
+        return -1
+    try:
+        VersionInfo:dict=load(VersionJSONFile)
+    except JSONDecodeError as E:
+        print(f"\033[31m{Version}的版本文件解析失败!死因:{E}\033[0m")
+        return -1
+    VersionJSONFile.close()
+    del VersionJSONFile #释放内存(IO对象:I'm Free~)x2
+    ArgumentsInfo:dict=VersionInfo.get("arguments",{})
+    if not ArgumentsInfo:
+        ArgumentsInfo:str=VersionInfo.get("minecraftArguments","") #版本1.13以后该字段被arguments替代
+        if not ArgumentsInfo:
+            print("\033[31m该版本没有启动参数!\033[0m") #那就不是我的锅了啊()
+            return -1
+    
+    JVMArgs:list[str|dict]=ArgumentsInfo.get("jvm",[])
+    GameArgs:list[str|dict]=ArgumentsInfo.get("game",[])
+    if not JVMArgs:
+        print("\033[31m该版本没有JVM参数!\033[0m")
+        return -1
+    if not GameArgs:
+        print("\033[31m该版本没有游戏参数!\033[0m")
+        return -1
+    
+
+#调试用代码
 #测试代码
 VersionList=GetVersionList()
 Version="1.21.4"
 GameRoot=".minecraft"
-ThreadCount=1
+ThreadCount=64
 CategoricaledVersions=CategoricalVersions(VersionList)
 VersionInfo=FindVersion(Version,CategoricaledVersions)
 if not VersionInfo:
     print("没有找到版本信息!")
     exit()
 DownloadVersion(VersionInfo,GameRoot)
-CompleteFiles(Version,GameRoot,ThreadCount,32)
+print(CompleteFiles(Version,GameRoot,ThreadCount,32))
