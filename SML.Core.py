@@ -18,7 +18,7 @@ import platform,requests,json
 import subprocess,sys,webbrowser
 import random,re,io
 import hashlib,datetime,os
-import concurrent.futures,shutil
+import concurrent.futures,shutil,typing
 """
 从此处开始改为from xx import xx的形式
 """
@@ -51,18 +51,31 @@ from concurrent.futures import ThreadPoolExecutor
 from os import makedirs,remove,rmdir
 #------复制文件------
 from shutil import copyfile
+#------类型注解------
+from typing import Generator,Iterable,Callable
+
+#------一些我自己都不知道是什么的东西------
+
+__all__=[
+    "AccountManager",
+    "function",
+    "VersionManager" #将会在未来实现的功能
+]
+
+#------类型注解区------
+class function(Generator,Iterable,Callable):... #不是我要用全小写,是不这么写VSCode不认这是函数
 
 #------常量区------
-strptime=datetime.strptime
-strftime=datetime.strftime
-AssetsDownloadLink="https://resources.download.minecraft.net/{0}/{1}"
-AssetsIndexSavePath="{0}\\assets\\indexes\\{1}.json"
-AssetsSavePath="{0}\\assets\\objects\\{1}\\{2}"
-LegacySavePath="{0}\\assets\\virtual\\legacy\\{1}"
-VersionJSONSavePath="{0}\\versions\\{1}\\{1}.json"
-VersionMainFileSavePath="{0}\\versions\\{1}\\{1}.jar"
-LibrariesSavePath="{0}\\libraries\\{1}"
-Log4j2ConfigSavePath="{0}\\assets\\log_configs\\{1}"
+strptime:function=datetime.strptime
+strftime:function=datetime.strftime
+AssetsDownloadLink:str="https://resources.download.minecraft.net/{0}/{1}"
+AssetsIndexSavePath:str="{0}\\assets\\indexes\\{1}.json"
+AssetsSavePath:str="{0}\\assets\\objects\\{1}\\{2}"
+LegacySavePath:str="{0}\\assets\\virtual\\legacy\\{1}"
+VersionJSONSavePath:str="{0}\\versions\\{1}\\{1}.json"
+VersionMainFileSavePath:str="{0}\\versions\\{1}\\{1}.jar"
+LibrariesSavePath:str="{0}\\libraries\\{1}"
+Log4j2ConfigSavePath:str="{0}\\assets\\log_configs\\{1}"
 
 #------备忘录------
 #1.获取前两位字符是[:2]
@@ -670,7 +683,7 @@ def VerifyFileSize(FilePath:str,Size:int)->bool:
     except:
         return False
 
-def DownloadOneFile(File:dict,ThreadCount:int=32):
+def DownloadOneFile(File:dict,ThreadCount:int=32)->tuple[dict,dict]:
     """
     下载单个文件(用于创建线程)\r\n
     不用你调用\r\n
@@ -1123,7 +1136,7 @@ def LaunchVersion(Version:str,GameRoot:str,Memory:int=1024,JavaPath:str="java",C
     if not GameArgs:
         print("\033[31m该版本没有游戏参数!\033[0m")
         return -1
-    
+    #没写完.jpg
 
 #调试用代码
 #测试代码
