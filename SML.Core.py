@@ -138,7 +138,7 @@ class AccountManager:
                     url="https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
                     data={
                         "grant_type":"urn:ietf:params:oauth:grant-type:device_code",
-                        "client_id":"78914bdb-de6d-4d65-9d88-5f4f9d357db4",
+                        "client_id":"（扣了，要改自己注册一个，然后稍微调教一下即可，别老想着用我的（））",
                         "device_code":DeviceCode,
                     }
                 )
