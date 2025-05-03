@@ -95,11 +95,7 @@ class AccountManager:
     def GetDeviceCode()->int|tuple[str,str,int]:
         """
         这次我打算换一种方法登录\r\n
-        但是这似人GFW就是SB\r\n
-        天天屏蔽登录网址\r\n
-        把account.live.com给屏蔽掉了\r\n
-        太SB了\r\n
-        所以你这似人GFW能不能少屏蔽点网址啊!\r\n
+        现account.live.com已恢复正常\r\n
         返回值可能是一个整数(出错码),也可能是一个元组(正常情况)\r\n
         第一个是Access Token\r\n
         第二个是Refresh Token\r\n
@@ -108,7 +104,7 @@ class AccountManager:
         Response:requests.Response=post(
             url="https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode",
             data={
-                "client_id":"78914bdb-de6d-4d65-9d88-5f4f9d357db4",
+                "client_id":"孩子们，你们不会真的想找我的client-id吧？做梦!",
                 "scope":"XboxLive.signin offline_access"
             },
             headers={
